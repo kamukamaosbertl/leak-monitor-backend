@@ -1,14 +1,15 @@
 from pathlib import Path
+import os
+from decouple import config
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-change-this-in-production'
+SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production')
 
-DEBUG = True
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*').split(',')
 
-# Applications
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -16,17 +17,16 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    # Third party
     'rest_framework',
     'corsheaders',
     'channels',
-    # Our app
     'sensors',
 ]
 
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',  # must be first
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -53,35 +53,44 @@ TEMPLATES = [
     },
 ]
 
-# ASGI for WebSocket support
 ASGI_APPLICATION = 'core.asgi.application'
 
-# PostgreSQL database
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'leak_monitor_db',
-        'USER': 'postgres',
-        'PASSWORD': '12345678',  
-        'HOST': 'localhost',
-        'PORT': '5432',
-    }
-}
+# Database — uses DATABASE_URL on Render, falls back to local PostgreSQL
+DATABASE_URL = config('DATABASE_URL', default=None)
 
-# Channel layers - uses Redis for WebSocket management
+if DATABASE_URL:
+    import dj_database_url
+    DATABASES = {
+        'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)
+    }
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': 'leak_monitor_db',
+            'USER': 'postgres',
+            'PASSWORD': '12345678',
+            'HOST': 'localhost',
+            'PORT': '5432',
+        }
+    }
+
+# Redis — uses REDIS_URL on Render, falls back to local Memurai
+REDIS_URL = config('REDIS_URL', default='redis://127.0.0.1:6379')
+
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [('127.0.0.1', 6379)],
+            'hosts': [REDIS_URL],
         },
     },
 }
 
-# Allow Flutter app to talk to Django
 CORS_ALLOW_ALL_ORIGINS = True
 
-# Static files
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
