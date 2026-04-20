@@ -199,6 +199,7 @@ class SensorConsumer(AsyncWebsocketConsumer):
             water_lost       = data.get('water_lost', 0),
             money_lost       = data.get('money_lost', 0),
             location         = data.get('location', 'Unknown'),
+            status           = status,
             # parse the timestamp from ESP32, fall back to now if missing
             timestamp        = parse_datetime(
                                    data.get('timestamp', '')

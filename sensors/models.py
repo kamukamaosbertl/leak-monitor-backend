@@ -12,6 +12,7 @@ class LeakEvent(models.Model):
     duration_minutes = models.FloatField()
     water_lost       = models.FloatField()
     money_lost       = models.FloatField()
+    status           = models.CharField(max_length=20)
     location         = models.CharField(max_length=255)
     timestamp        = models.DateTimeField()
     created_at       = models.DateTimeField(auto_now_add=True)
