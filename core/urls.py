@@ -5,4 +5,5 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     # All sensor API endpoints
     path('api/', include('sensors.urls')),
+    path('api/auth/', include('accounts.urls')),
 ]
