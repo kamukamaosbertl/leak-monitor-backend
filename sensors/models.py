@@ -67,3 +67,21 @@ class DeviceToken(models.Model):
 
     def __str__(self):
         return f"{self.device_id or 'unknown'} - {self.platform or 'unknown'}"
+
+
+class AlertSettings(models.Model):
+    """
+    Stores the system-wide thresholds used by the backend
+    when deciding warning, leak_detected, and critical states.
+    """
+    delta_threshold = models.FloatField(default=5.0)
+    water_lost_threshold = models.FloatField(default=50.0)
+    duration_threshold = models.IntegerField(default=10)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return (
+            f"Thresholds(delta={self.delta_threshold}, "
+            f"water_lost={self.water_lost_threshold}, "
+            f"duration={self.duration_threshold})"
+        )

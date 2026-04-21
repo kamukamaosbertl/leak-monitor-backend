@@ -3,8 +3,12 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 
-from .models import LeakEvent, Alert
-from .serializers import LeakEventSerializer, AlertSerializer
+from .models import LeakEvent, Alert, AlertSettings
+from .serializers import (
+    LeakEventSerializer,
+    AlertSerializer,
+    AlertSettingsSerializer,
+)
 
 
 class LeakEventCreateView(APIView):
@@ -55,7 +59,10 @@ class MarkAlertReadView(APIView):
         alert = get_object_or_404(Alert, pk=pk)
         alert.is_read = True
         alert.save()
-        return Response({'message': 'Alert marked as read'}, status=status.HTTP_200_OK)
+        return Response(
+            {'message': 'Alert marked as read'},
+            status=status.HTTP_200_OK,
+        )
 
 
 class DismissAlertView(APIView):
@@ -67,7 +74,10 @@ class DismissAlertView(APIView):
         alert = get_object_or_404(Alert, pk=pk)
         alert.is_dismissed = True
         alert.save()
-        return Response({'message': 'Alert dismissed'}, status=status.HTTP_200_OK)
+        return Response(
+            {'message': 'Alert dismissed'},
+            status=status.HTTP_200_OK,
+        )
 
 
 class MarkAllAlertsReadView(APIView):
@@ -77,4 +87,41 @@ class MarkAllAlertsReadView(APIView):
     """
     def patch(self, request):
         Alert.objects.filter(is_read=False).update(is_read=True)
-        return Response({'message': 'All alerts marked as read'}, status=status.HTTP_200_OK)
+        return Response(
+            {'message': 'All alerts marked as read'},
+            status=status.HTTP_200_OK,
+        )
+
+
+class AlertSettingsView(APIView):
+    """
+    GET /api/settings/alerts/
+    Returns the current global alert threshold settings.
+
+    PATCH /api/settings/alerts/
+    Updates the global alert threshold settings.
+    """
+    def get(self, request):
+        settings_obj, _ = AlertSettings.objects.get_or_create(id=1)
+        serializer = AlertSettingsSerializer(settings_obj)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request):
+        settings_obj, _ = AlertSettings.objects.get_or_create(id=1)
+        serializer = AlertSettingsSerializer(
+            settings_obj,
+            data=request.data,
+            partial=True,
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {
+                    'message': 'Alert settings updated successfully.',
+                    'data': serializer.data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
