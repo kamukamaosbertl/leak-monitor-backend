@@ -1,72 +1,43 @@
 import json
+from datetime import timedelta
+
 from channels.generic.websocket import AsyncWebsocketConsumer
-from channels.db import database_sync_to_async  # allows database calls inside async code
+from channels.db import database_sync_to_async
 
 
 class SensorConsumer(AsyncWebsocketConsumer):
     """
-    This is the WebSocket brain of the system.
-    
-    It handles three types of connections:
-    - ESP32 connects and streams live sensor data every 1 second
-    - Flutter app connects and receives live data in real time
-    - When a leak is detected, it automatically saves to the database
+    WebSocket consumer for live sensor data.
+
+    Current responsibilities:
+    - ESP32 sends sensor data
+    - Django calculates delta, water loss, money loss, and status
+    - Django saves leak events when needed
+    - Django creates alerts for leak_detected and critical states
+    - Django broadcasts live updates to all connected Flutter apps
     """
 
-    # All connected clients (ESP32 and Flutter) join this one group
-    # so when ESP32 sends data, ALL Flutter apps receive it instantly
     group_name = 'sensors_live'
-
-    # Cost of water per litre in USD
-    # Uganda water cost ≈ 0.0005 USD per litre — adjust as needed
     COST_PER_LITRE = 0.0005
 
-    # ─────────────────────────────────────────
-    # STEP 1: Someone connects to the WebSocket
-    # ─────────────────────────────────────────
     async def connect(self):
-        # Add this new connection to the group
-        # so it can receive broadcasts from other members
         await self.channel_layer.group_add(
             self.group_name,
             self.channel_name
         )
-
-        # Accept the WebSocket connection
-        # without this line the connection is rejected
         await self.accept()
-
         print(f'Client connected: {self.channel_name}')
 
-    # ─────────────────────────────────────────
-    # STEP 2: Someone disconnects
-    # ─────────────────────────────────────────
     async def disconnect(self, close_code):
-        # Remove this connection from the group
-        # so it no longer receives broadcasts
         await self.channel_layer.group_discard(
             self.group_name,
             self.channel_name
         )
-
         print(f'Client disconnected: {self.channel_name}')
 
-    # ─────────────────────────────────────────
-    # STEP 3: ESP32 sends sensor data
-    # ─────────────────────────────────────────
     async def receive(self, text_data):
         """
-        Called every time ESP32 sends a message over WebSocket.
-        
-        What happens here:
-        1. Parse the incoming JSON data
-        2. Calculate delta (flow_in - flow_out)
-        3. Calculate water_lost and money_lost automatically
-        4. Determine leak status based on delta value
-        5. If leak detected → save to database automatically
-        6. Broadcast the complete data to all Flutter apps
-
-        ESP32 only needs to send:
+        Expected ESP32 payload:
         {
             "device_id": "esp32_001",
             "flow_in": 12.5,
@@ -75,28 +46,19 @@ class SensorConsumer(AsyncWebsocketConsumer):
             "location": "Kitchen",
             "timestamp": "2026-04-15T10:00:00Z"
         }
-        Django calculates everything else automatically.
         """
         try:
-            # Parse the raw JSON string into a Python dictionary
             data = json.loads(text_data)
 
-            # ── Get flow readings from ESP32 ─────────────────
-            flow_in          = float(data.get('flow_in', 0))
-            flow_out         = float(data.get('flow_out', 0))
+            flow_in = float(data.get('flow_in', 0))
+            flow_out = float(data.get('flow_out', 0))
             duration_minutes = float(data.get('duration_minutes', 0))
 
-            # ── Calculate delta ──────────────────────────────
-            # Delta = how much water is being lost per minute
-            # ESP32 only sends flow_in and flow_out
-            # Django calculates the difference automatically
+            # Calculate delta
             delta = round(flow_in - flow_out, 2)
             data['delta'] = delta
 
-            # ── Calculate water lost and money lost ──────────
-            # Water lost (litres) = delta × duration_minutes
-            # Money lost (USD)    = water_lost × cost per litre
-            # Only calculate if there is actually a loss (delta > 0)
+            # Calculate water lost and money lost
             if delta > 0:
                 water_lost = round(delta * duration_minutes, 2)
                 money_lost = round(water_lost * self.COST_PER_LITRE, 4)
@@ -107,13 +69,7 @@ class SensorConsumer(AsyncWebsocketConsumer):
             data['water_lost'] = water_lost
             data['money_lost'] = money_lost
 
-            # ── Determine leak status ────────────────────────
-            # Based on the delta value we assign a status
-            # These thresholds mean:
-            #   delta < 2.0  → everything is normal
-            #   delta < 5.0  → small difference, worth watching
-            #   delta < 10.0 → significant loss, likely a leak
-            #   delta >= 10  → confirmed leak, critical level
+            # Determine status
             if delta < 2.0:
                 data['status'] = 'normal'
             elif delta < 5.0:
@@ -123,90 +79,135 @@ class SensorConsumer(AsyncWebsocketConsumer):
             else:
                 data['status'] = 'critical'
 
-            # ── Auto save to database if leak detected ───────
-            # If status is leak_detected or critical we save
-            # a record to PostgreSQL automatically
-            # This means you do NOT need the hardware guy to
-            # send a separate HTTP POST — Django handles it
+            # Save leak history only for real leak states
             if data['status'] in ['leak_detected', 'critical']:
                 await self.save_leak_event(data)
+                await self.create_alert_if_needed(data)
 
-            # ── Broadcast to all Flutter apps ────────────────
-            # Send the complete data to every connected client
-            # in the group — this is what updates the dashboard
-            # in real time on every Flutter app simultaneously
+            # Broadcast live update to all connected clients
             await self.channel_layer.group_send(
                 self.group_name,
                 {
-                    'type': 'sensor_update',  # must match method name below
+                    'type': 'sensor_update',
                     'data': data
                 }
             )
 
-            print(f"Data processed — location: {data.get('location')} | "
-                  f"flow_in: {flow_in} | flow_out: {flow_out} | "
-                  f"delta: {delta} | water_lost: {water_lost}L | "
-                  f"money_lost: ${money_lost} | status: {data['status']}")
+            print(
+                f"Data processed — location: {data.get('location')} | "
+                f"flow_in: {flow_in} | flow_out: {flow_out} | "
+                f"delta: {delta} | water_lost: {water_lost}L | "
+                f"money_lost: ${money_lost} | status: {data['status']}"
+            )
 
         except json.JSONDecodeError:
-            # If ESP32 sends badly formatted data, send back an error
-            # instead of crashing the entire server
             await self.send(text_data=json.dumps({
                 'error': 'Invalid JSON received — expected valid JSON format'
             }))
+        except Exception as e:
+            await self.send(text_data=json.dumps({
+                'error': f'Processing failed: {str(e)}'
+            }))
 
-    # ─────────────────────────────────────────
-    # STEP 4: Send data to one specific client
-    # ─────────────────────────────────────────
     async def sensor_update(self, event):
         """
-        Called automatically by group_send above.
-        
-        group_send broadcasts to the GROUP.
-        This method delivers it to THIS specific client.
-        Every connected Flutter app has its own version
-        of this method running — so all apps get the data.
+        Delivers broadcast data to one connected client.
         """
         await self.send(text_data=json.dumps(event['data']))
 
-    # ─────────────────────────────────────────
-    # STEP 5: Save leak event to database
-    # ─────────────────────────────────────────
     @database_sync_to_async
     def save_leak_event(self, data):
         """
-        Saves a leak event record to PostgreSQL.
-        
-        @database_sync_to_async is required because:
-        - Our WebSocket consumer runs in async mode
-        - Django database calls are synchronous (blocking)
-        - This decorator bridges the two safely
-        
-        This only runs when status is leak_detected or critical.
-        It saves the location, flow readings, and timestamp
-        so you have a full history of every leak that happened.
+        Saves leak history records to the database.
         """
-        from .models import LeakEvent
-        from django.utils.dateparse import parse_datetime
         from django.utils import timezone
+        from django.utils.dateparse import parse_datetime
+        from .models import LeakEvent
 
         LeakEvent.objects.create(
-            device_id        = data.get('device_id', 'unknown'),
-            flow_in          = data.get('flow_in', 0),
-            flow_out         = data.get('flow_out', 0),
-            delta            = data.get('delta', 0),
-            duration_minutes = data.get('duration_minutes', 0),
-            water_lost       = data.get('water_lost', 0),
-            money_lost       = data.get('money_lost', 0),
-            location         = data.get('location', 'Unknown'),
-            status           = status,
-            # parse the timestamp from ESP32, fall back to now if missing
-            timestamp        = parse_datetime(
-                                   data.get('timestamp', '')
-                               ) or timezone.now(),
+            device_id=data.get('device_id', 'unknown'),
+            flow_in=data.get('flow_in', 0),
+            flow_out=data.get('flow_out', 0),
+            delta=data.get('delta', 0),
+            duration_minutes=data.get('duration_minutes', 0),
+            water_lost=data.get('water_lost', 0),
+            money_lost=data.get('money_lost', 0),
+            location=data.get('location', 'Unknown'),
+            status=data.get('status', 'normal'),
+            timestamp=parse_datetime(data.get('timestamp', '')) or timezone.now(),
         )
 
-        print(f"Leak event saved — location: {data.get('location')} | "
-              f"delta: {data.get('delta')} | "
-              f"water_lost: {data.get('water_lost')}L | "
-              f"money_lost: ${data.get('money_lost')}")
+        print(
+            f"Leak event saved — location: {data.get('location')} | "
+            f"delta: {data.get('delta')} | "
+            f"water_lost: {data.get('water_lost')}L | "
+            f"money_lost: ${data.get('money_lost')}"
+        )
+
+    @database_sync_to_async
+    def create_alert_if_needed(self, data):
+        """
+        Creates an alert for leak_detected or critical states.
+
+        To avoid spamming alerts every second, this checks whether
+        a similar alert for the same device/location/severity was
+        created recently.
+        """
+        from django.utils import timezone
+        from .models import Alert
+
+        status = data.get('status', 'normal')
+        device_id = data.get('device_id', 'unknown')
+        location = data.get('location', 'Unknown')
+
+        # Map leak status to alert severity
+        if status == 'critical':
+            severity = 'critical'
+            title = 'Critical Leak Detected'
+            message = (
+                f"Critical water loss detected at {location}. "
+                f"Delta: {data.get('delta', 0)} L/min, "
+                f"water lost: {data.get('water_lost', 0)} L."
+            )
+        elif status == 'leak_detected':
+            severity = 'warning'
+            title = 'Leak Detected'
+            message = (
+                f"Leak detected at {location}. "
+                f"Delta: {data.get('delta', 0)} L/min, "
+                f"water lost: {data.get('water_lost', 0)} L."
+            )
+        else:
+            return
+
+        # Prevent duplicate alerts in a short window
+        recent_cutoff = timezone.now() - timedelta(minutes=5)
+
+        already_exists = Alert.objects.filter(
+            device_id=device_id,
+            location=location,
+            severity=severity,
+            created_at__gte=recent_cutoff,
+            is_dismissed=False,
+        ).exists()
+
+        if already_exists:
+            print(
+                f"Skipped duplicate alert — device: {device_id} | "
+                f"location: {location} | severity: {severity}"
+            )
+            return
+
+        Alert.objects.create(
+            device_id=device_id,
+            title=title,
+            message=message,
+            location=location,
+            severity=severity,
+            timestamp=timezone.now(),
+        )
+
+        print(
+            f"Alert created — device: {device_id} | "
+            f"location: {location} | severity: {severity}"
+        )
