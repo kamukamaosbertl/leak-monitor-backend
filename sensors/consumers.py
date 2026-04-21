@@ -6,7 +6,6 @@ from channels.db import database_sync_to_async
 
 
 class SensorConsumer(AsyncWebsocketConsumer):
-
     group_name = 'sensors_live'
     COST_PER_LITRE = 0.0005
 
@@ -37,7 +36,7 @@ class SensorConsumer(AsyncWebsocketConsumer):
             delta = round(flow_in - flow_out, 2)
             data['delta'] = delta
 
-            # Calculate water + money
+            # Calculate water lost and money lost
             if delta > 0:
                 water_lost = round(delta * duration_minutes, 2)
                 money_lost = round(water_lost * self.COST_PER_LITRE, 4)
@@ -48,18 +47,31 @@ class SensorConsumer(AsyncWebsocketConsumer):
             data['water_lost'] = water_lost
             data['money_lost'] = money_lost
 
-            # 🔥 NEW: Get thresholds from DB
+            # Load thresholds from DB
             thresholds = await self.get_alert_settings()
-
             delta_threshold = thresholds['delta']
             water_threshold = thresholds['water']
             duration_threshold = thresholds['duration']
 
-            # 🔥 UPDATED LOGIC USING SETTINGS
-            if delta < 2.0:
-                data['status'] = 'normal'
-            elif delta < delta_threshold:
-                data['status'] = 'warning'
+            # Corrected status logic:
+            #
+            # normal:
+            #   delta below the configured delta threshold
+            #
+            # leak_detected:
+            #   any configured threshold is crossed
+            #
+            # critical:
+            #   severe case = much higher than threshold
+            #
+            # This keeps the behavior predictable and makes the
+            # saved settings actually control the system.
+            if (
+                delta >= (delta_threshold * 2)
+                or water_lost >= (water_threshold * 2)
+                or duration_minutes >= (duration_threshold * 2)
+            ):
+                data['status'] = 'critical'
             elif (
                 delta >= delta_threshold
                 or water_lost >= water_threshold
@@ -67,14 +79,14 @@ class SensorConsumer(AsyncWebsocketConsumer):
             ):
                 data['status'] = 'leak_detected'
             else:
-                data['status'] = 'critical'
+                data['status'] = 'normal'
 
-            # Save + alert
+            # Save leak events and create alerts only for leak states
             if data['status'] in ['leak_detected', 'critical']:
                 await self.save_leak_event(data)
                 await self.create_alert_if_needed(data)
 
-            # Broadcast
+            # Broadcast to all connected clients
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -83,6 +95,18 @@ class SensorConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+            print(
+                f"Processed | device={data.get('device_id')} | "
+                f"location={data.get('location')} | "
+                f"delta={delta} | water_lost={water_lost} | "
+                f"duration={duration_minutes} | status={data['status']} | "
+                f"thresholds(delta={delta_threshold}, water={water_threshold}, duration={duration_threshold})"
+            )
+
+        except json.JSONDecodeError:
+            await self.send(text_data=json.dumps({
+                'error': 'Invalid JSON received'
+            }))
         except Exception as e:
             await self.send(text_data=json.dumps({
                 'error': f'Processing failed: {str(e)}'
@@ -91,7 +115,6 @@ class SensorConsumer(AsyncWebsocketConsumer):
     async def sensor_update(self, event):
         await self.send(text_data=json.dumps(event['data']))
 
-    # 🔥 NEW FUNCTION
     @database_sync_to_async
     def get_alert_settings(self):
         from .models import AlertSettings
