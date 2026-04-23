@@ -1,14 +1,17 @@
 import json
 from datetime import timedelta
 
-from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from channels.generic.websocket import AsyncWebsocketConsumer
 from firebase_admin import messaging
 
 
 class SensorConsumer(AsyncWebsocketConsumer):
     group_name = 'sensors_live'
     COST_PER_LITRE = 0.0005
+    MAX_HISTORY_RECORDS = 100
+    HISTORY_DEDUP_WINDOW_MINUTES = 5
+    HISTORY_FULL_ALERT_COOLDOWN_MINUTES = 10
 
     async def connect(self):
         await self.channel_layer.group_add(
@@ -33,11 +36,9 @@ class SensorConsumer(AsyncWebsocketConsumer):
             flow_out = float(data.get('flow_out', 0))
             duration_minutes = float(data.get('duration_minutes', 0))
 
-            # Calculate delta
             delta = round(flow_in - flow_out, 2)
             data['delta'] = delta
 
-            # Calculate water lost and money lost
             if delta > 0:
                 water_lost = round(delta * duration_minutes, 2)
                 money_lost = round(water_lost * self.COST_PER_LITRE, 4)
@@ -48,25 +49,11 @@ class SensorConsumer(AsyncWebsocketConsumer):
             data['water_lost'] = water_lost
             data['money_lost'] = money_lost
 
-            # Load thresholds from DB
             thresholds = await self.get_alert_settings()
             delta_threshold = thresholds['delta']
             water_threshold = thresholds['water']
             duration_threshold = thresholds['duration']
 
-            # Corrected status logic:
-            #
-            # normal:
-            #   delta below the configured delta threshold
-            #
-            # leak_detected:
-            #   any configured threshold is crossed
-            #
-            # critical:
-            #   severe case = much higher than threshold
-            #
-            # This keeps the behavior predictable and makes the
-            # saved settings actually control the system.
             if (
                 delta >= (delta_threshold * 2)
                 or water_lost >= (water_threshold * 2)
@@ -82,9 +69,15 @@ class SensorConsumer(AsyncWebsocketConsumer):
             else:
                 data['status'] = 'normal'
 
-            # Save leak events and create alerts only for leak states
             if data['status'] in ['leak_detected', 'critical']:
-                await self.save_leak_event(data)
+                history_result = await self.save_leak_event(data)
+
+                if history_result.get('history_full_notified'):
+                    await self.send_push_notification(
+                        'History Limit Reached',
+                        'History is full (100 records). Old records are being replaced automatically.'
+                    )
+
                 alert_data = await self.create_alert_if_needed(data)
 
                 if alert_data:
@@ -93,7 +86,6 @@ class SensorConsumer(AsyncWebsocketConsumer):
                         alert_data['message']
                     )
 
-            # Broadcast to all connected clients
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -138,34 +130,93 @@ class SensorConsumer(AsyncWebsocketConsumer):
     def save_leak_event(self, data):
         from django.utils import timezone
         from django.utils.dateparse import parse_datetime
-        from .models import LeakEvent
+        from .models import LeakEvent, Alert
+
+        device_id = data.get('device_id', 'unknown')
+        location = data.get('location', 'Unknown')
+        status_value = data.get('status', 'normal')
+
+        recent_cutoff = timezone.now() - timedelta(
+            minutes=self.HISTORY_DEDUP_WINDOW_MINUTES
+        )
+
+        duplicate_exists = LeakEvent.objects.filter(
+            device_id=device_id,
+            location=location,
+            status=status_value,
+            created_at__gte=recent_cutoff,
+        ).exists()
+
+        if duplicate_exists:
+            return {
+                'saved': False,
+                'reason': 'duplicate_recent_event',
+                'history_full': False,
+                'history_full_notified': False,
+            }
+
+        current_count = LeakEvent.objects.count()
+        history_full = current_count >= self.MAX_HISTORY_RECORDS
+        history_full_notified = False
+
+        if history_full:
+            alert_cutoff = timezone.now() - timedelta(
+                minutes=self.HISTORY_FULL_ALERT_COOLDOWN_MINUTES
+            )
+
+            already_notified = Alert.objects.filter(
+                title='History Limit Reached',
+                created_at__gte=alert_cutoff,
+            ).exists()
+
+            if not already_notified:
+                Alert.objects.create(
+                    device_id=device_id,
+                    title='History Limit Reached',
+                    message='History is full (100 records). Old records are being replaced automatically.',
+                    location=location,
+                    severity='info',
+                    timestamp=timezone.now(),
+                )
+                history_full_notified = True
+
+            oldest = LeakEvent.objects.order_by('created_at').first()
+            if oldest:
+                oldest.delete()
 
         LeakEvent.objects.create(
-            device_id=data.get('device_id', 'unknown'),
-            flow_in=data.get('flow_in', 0),
-            flow_out=data.get('flow_out', 0),
-            delta=data.get('delta', 0),
-            duration_minutes=data.get('duration_minutes', 0),
-            water_lost=data.get('water_lost', 0),
-            money_lost=data.get('money_lost', 0),
-            location=data.get('location', 'Unknown'),
-            status=data.get('status', 'normal'),
+            device_id=device_id,
+            flow_in=float(data.get('flow_in', 0)),
+            flow_out=float(data.get('flow_out', 0)),
+            delta=float(data.get('delta', 0)),
+            duration_minutes=float(data.get('duration_minutes', 0)),
+            water_lost=float(data.get('water_lost', 0)),
+            money_lost=float(data.get('money_lost', 0)),
+            location=location,
+            status=status_value,
             timestamp=parse_datetime(data.get('timestamp', '')) or timezone.now(),
         )
+
+        return {
+            'saved': True,
+            'reason': 'created',
+            'history_full': history_full,
+            'history_full_notified': history_full_notified,
+        }
 
     @database_sync_to_async
     def create_alert_if_needed(self, data):
         from django.utils import timezone
         from .models import Alert
 
-        status = data.get('status', 'normal')
+        status_value = data.get('status', 'normal')
         device_id = data.get('device_id', 'unknown')
         location = data.get('location', 'Unknown')
 
-        if status == 'critical':
+        if status_value == 'critical':
             severity = 'critical'
             title = 'Critical Leak Detected'
-        elif status == 'leak_detected':
+        elif status_value == 'leak_detected':
             severity = 'warning'
             title = 'Leak Detected'
         else:
@@ -230,3 +281,4 @@ class SensorConsumer(AsyncWebsocketConsumer):
                 print(f'Push sent to {token}')
             except Exception as e:
                 print(f'Push failed for {token}: {e}')
+                
