@@ -1,10 +1,9 @@
-# sensors/firebase_config.py
-
+import json
+import os
 import firebase_admin
 from firebase_admin import credentials
 
-from core.settings import BASE_DIR
-
 if not firebase_admin._apps:
-    cred = credentials.Certificate(BASE_DIR/"water-ab382-firebase-adminsdk-fbsvc-021f046960.json")
+    service_account_info = json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT_JSON"])
+    cred = credentials.Certificate(service_account_info)
     firebase_admin.initialize_app(cred)
