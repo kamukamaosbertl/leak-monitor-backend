@@ -69,15 +69,15 @@ class RegisterDeviceTokenView(APIView):
 class LeakEventCreateView(APIView):
     """
     POST /api/leaks/
-    ESP32 calls this every 20 sec when leak is detected.
+    ESP32 calls this when leak data is sent directly through REST.
     Saves the leak event to PostgreSQL.
     Also creates an alert and sends push notification when needed.
     """
     def post(self, request):
         serializer = LeakEventSerializer(data=request.data)
+
         if serializer.is_valid():
             leak_event = serializer.save()
-
             alert = None
 
             if leak_event.status == "critical":
@@ -91,7 +91,7 @@ class LeakEventCreateView(APIView):
                 )
                 send_push_notification(alert.title, alert.message)
 
-            elif leak_event.status == "warning":
+            elif leak_event.status in ["warning", "leak_detected"]:
                 alert = Alert.objects.create(
                     device_id=leak_event.device_id,
                     title="⚠️ Water Leak Detected",
@@ -104,12 +104,13 @@ class LeakEventCreateView(APIView):
 
             return Response(
                 {
-                    'message': 'Leak event saved.',
-                    'data': serializer.data,
-                    'alert_created': alert.id if alert else None,
+                    "message": "Leak event saved.",
+                    "data": serializer.data,
+                    "alert_created": alert.id if alert else None,
                 },
-                status=status.HTTP_201_CREATED
+                status=status.HTTP_201_CREATED,
             )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -117,11 +118,67 @@ class LeakEventListView(APIView):
     """
     GET /api/leaks/history/
     Flutter calls this to fetch past leak events.
+    Returns the most recent 100 events.
     """
     def get(self, request):
-        events = LeakEvent.objects.all()[:50]  # last 50 events
+        events = LeakEvent.objects.all()[:100]
         serializer = LeakEventSerializer(events, many=True)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class LeakEventDetailView(APIView):
+    """
+    PATCH /api/leaks/history/<id>/
+    Update one history record.
+
+    DELETE /api/leaks/history/<id>/
+    Delete one history record.
+    """
+    def patch(self, request, pk):
+        event = get_object_or_404(LeakEvent, pk=pk)
+        serializer = LeakEventSerializer(
+            event,
+            data=request.data,
+            partial=True,
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {
+                    "message": "Leak event updated successfully.",
+                    "data": serializer.data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        event = get_object_or_404(LeakEvent, pk=pk)
+        event.delete()
+
+        return Response(
+            {"message": "Leak event deleted successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class LeakEventClearView(APIView):
+    """
+    DELETE /api/leaks/history/clear/
+    Deletes all history records.
+    """
+    def delete(self, request):
+        deleted_count, _ = LeakEvent.objects.all().delete()
+
+        return Response(
+            {
+                "message": "All leak history deleted successfully.",
+                "deleted_count": deleted_count,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class AlertListView(APIView):
@@ -132,7 +189,7 @@ class AlertListView(APIView):
     def get(self, request):
         alerts = Alert.objects.filter(is_dismissed=False)[:50]
         serializer = AlertSerializer(alerts, many=True)
-        return Response(serializer.data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class MarkAlertReadView(APIView):
@@ -144,8 +201,9 @@ class MarkAlertReadView(APIView):
         alert = get_object_or_404(Alert, pk=pk)
         alert.is_read = True
         alert.save()
+
         return Response(
-            {'message': 'Alert marked as read'},
+            {"message": "Alert marked as read"},
             status=status.HTTP_200_OK,
         )
 
@@ -159,8 +217,9 @@ class DismissAlertView(APIView):
         alert = get_object_or_404(Alert, pk=pk)
         alert.is_dismissed = True
         alert.save()
+
         return Response(
-            {'message': 'Alert dismissed'},
+            {"message": "Alert dismissed"},
             status=status.HTTP_200_OK,
         )
 
@@ -172,8 +231,9 @@ class MarkAllAlertsReadView(APIView):
     """
     def patch(self, request):
         Alert.objects.filter(is_read=False).update(is_read=True)
+
         return Response(
-            {'message': 'All alerts marked as read'},
+            {"message": "All alerts marked as read"},
             status=status.HTTP_200_OK,
         )
 
@@ -189,6 +249,7 @@ class AlertSettingsView(APIView):
     def get(self, request):
         settings_obj, _ = AlertSettings.objects.get_or_create(id=1)
         serializer = AlertSettingsSerializer(settings_obj)
+
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def patch(self, request):
@@ -203,8 +264,8 @@ class AlertSettingsView(APIView):
             serializer.save()
             return Response(
                 {
-                    'message': 'Alert settings updated successfully.',
-                    'data': serializer.data,
+                    "message": "Alert settings updated successfully.",
+                    "data": serializer.data,
                 },
                 status=status.HTTP_200_OK,
             )
