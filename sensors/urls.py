@@ -11,6 +11,9 @@ from .views import (
 
     # NEW: Alert Settings
     AlertSettingsView,
+
+    # NEW: Device Token
+    RegisterDeviceTokenView,
 )
 
 urlpatterns = [
@@ -24,6 +27,9 @@ urlpatterns = [
     path('alerts/<int:pk>/dismiss/', DismissAlertView.as_view(), name='alert-dismiss'),
     path('alerts/mark-all-read/', MarkAllAlertsReadView.as_view(), name='alerts-mark-all-read'),
 
-    # ───── NEW: SETTINGS ─────
+    # ───── SETTINGS ─────
     path('settings/alerts/', AlertSettingsView.as_view(), name='alert-settings'),
+
+    # ───── NEW: DEVICE TOKEN ─────
+    path('device-token/', RegisterDeviceTokenView.as_view(), name='device-token'),
 ]

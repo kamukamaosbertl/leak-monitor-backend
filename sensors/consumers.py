@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from firebase_admin import messaging
 
 
 class SensorConsumer(AsyncWebsocketConsumer):
@@ -84,7 +85,13 @@ class SensorConsumer(AsyncWebsocketConsumer):
             # Save leak events and create alerts only for leak states
             if data['status'] in ['leak_detected', 'critical']:
                 await self.save_leak_event(data)
-                await self.create_alert_if_needed(data)
+                alert_data = await self.create_alert_if_needed(data)
+
+                if alert_data:
+                    await self.send_push_notification(
+                        alert_data['title'],
+                        alert_data['message']
+                    )
 
             # Broadcast to all connected clients
             await self.channel_layer.group_send(
@@ -162,7 +169,7 @@ class SensorConsumer(AsyncWebsocketConsumer):
             severity = 'warning'
             title = 'Leak Detected'
         else:
-            return
+            return None
 
         message = (
             f"{title} at {location}. "
@@ -179,9 +186,9 @@ class SensorConsumer(AsyncWebsocketConsumer):
             created_at__gte=recent_cutoff,
             is_dismissed=False,
         ).exists():
-            return
+            return None
 
-        Alert.objects.create(
+        alert = Alert.objects.create(
             device_id=device_id,
             title=title,
             message=message,
@@ -189,3 +196,37 @@ class SensorConsumer(AsyncWebsocketConsumer):
             severity=severity,
             timestamp=timezone.now(),
         )
+
+        return {
+            'title': alert.title,
+            'message': alert.message,
+            'severity': alert.severity,
+        }
+
+    @database_sync_to_async
+    def get_active_device_tokens(self):
+        from .models import DeviceToken
+
+        return list(
+            DeviceToken.objects.filter(is_active=True).values_list('token', flat=True)
+        )
+
+    async def send_push_notification(self, title, body):
+        tokens = await self.get_active_device_tokens()
+
+        for token in tokens:
+            try:
+                msg = messaging.Message(
+                    token=token,
+                    notification=messaging.Notification(
+                        title=title,
+                        body=body,
+                    ),
+                    data={
+                        'type': 'water_leak',
+                    }
+                )
+                messaging.send(msg)
+                print(f'Push sent to {token}')
+            except Exception as e:
+                print(f'Push failed for {token}: {e}')

@@ -3,7 +3,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
 
-from .models import LeakEvent, Alert, AlertSettings
+from firebase_admin import messaging
+
+from .models import LeakEvent, Alert, AlertSettings, DeviceToken
 from .serializers import (
     LeakEventSerializer,
     AlertSerializer,
@@ -11,18 +13,101 @@ from .serializers import (
 )
 
 
+def send_push_notification(title, body):
+    tokens = DeviceToken.objects.filter(is_active=True).values_list("token", flat=True)
+
+    for token in tokens:
+        try:
+            message = messaging.Message(
+                token=token,
+                notification=messaging.Notification(
+                    title=title,
+                    body=body,
+                ),
+            )
+            messaging.send(message)
+            print(f"Notification sent to {token}")
+        except Exception as e:
+            print(f"Error sending to {token}: {e}")
+
+
+class RegisterDeviceTokenView(APIView):
+    """
+    POST /api/device-token/
+    Flutter sends FCM token here so Django can store it.
+    """
+    def post(self, request):
+        token = request.data.get("token")
+        device_id = request.data.get("device_id")
+        platform = request.data.get("platform")
+
+        if not token:
+            return Response(
+                {"error": "token is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        obj, created = DeviceToken.objects.update_or_create(
+            token=token,
+            defaults={
+                "device_id": device_id,
+                "platform": platform,
+                "is_active": True,
+            }
+        )
+
+        return Response(
+            {
+                "message": "Device token saved successfully.",
+                "created": created,
+                "token_id": obj.id,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
 class LeakEventCreateView(APIView):
     """
     POST /api/leaks/
     ESP32 calls this every 20 sec when leak is detected.
     Saves the leak event to PostgreSQL.
+    Also creates an alert and sends push notification when needed.
     """
     def post(self, request):
         serializer = LeakEventSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            leak_event = serializer.save()
+
+            alert = None
+
+            if leak_event.status == "critical":
+                alert = Alert.objects.create(
+                    device_id=leak_event.device_id,
+                    title="🚨 Critical Water Leak Detected",
+                    message=f"Critical leak detected at {leak_event.location}. Immediate action is required.",
+                    location=leak_event.location,
+                    severity="critical",
+                    timestamp=leak_event.timestamp,
+                )
+                send_push_notification(alert.title, alert.message)
+
+            elif leak_event.status == "warning":
+                alert = Alert.objects.create(
+                    device_id=leak_event.device_id,
+                    title="⚠️ Water Leak Detected",
+                    message=f"Leak detected at {leak_event.location}. Please check your system.",
+                    location=leak_event.location,
+                    severity="warning",
+                    timestamp=leak_event.timestamp,
+                )
+                send_push_notification(alert.title, alert.message)
+
             return Response(
-                {'message': 'Leak event saved.', 'data': serializer.data},
+                {
+                    'message': 'Leak event saved.',
+                    'data': serializer.data,
+                    'alert_created': alert.id if alert else None,
+                },
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
