@@ -298,11 +298,12 @@ class AlertResponseCreateView(APIView):
             notes=notes,
         )
 
-        if action == "acknowledged":
+        if action in["acknowledged","responding"] :
             alert.is_read = True
             alert.save()
 
-        if action == "dismissed":
+        if action in[ "resolved","dismissed"]:
+            alert.is_read = True
             alert.is_dismissed = True
             alert.save()
 
