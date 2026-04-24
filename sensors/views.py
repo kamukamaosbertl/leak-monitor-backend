@@ -528,7 +528,62 @@ class AdminSummaryView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+class ClearDismissedAlertsView(APIView):
+    """
+    DELETE /api/alerts/clear-dismissed/
+    Deletes only dismissed alerts.
+    Active alerts are kept.
+    """
+    def delete(self, request):
+        deleted_count, _ = Alert.objects.filter(is_dismissed=True).delete()
 
+        return Response(
+            {
+                "message": "Dismissed alerts cleared successfully.",
+                "deleted_count": deleted_count,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ClearResolvedAlertResponsesView(APIView):
+    """
+    DELETE /api/alerts/responses/clear-resolved/
+    Deletes only resolved/dismissed alert responses.
+    Active response records like acknowledged/responding are kept.
+    """
+    def delete(self, request):
+        deleted_count, _ = AlertResponse.objects.filter(
+            action__in=["resolved", "dismissed"]
+        ).delete()
+
+        return Response(
+            {
+                "message": "Resolved/dismissed alert responses cleared successfully.",
+                "deleted_count": deleted_count,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ClearCompletedMaintenanceRequestsView(APIView):
+    """
+    DELETE /api/maintenance/requests/clear-completed/
+    Deletes only completed maintenance requests.
+    Pending, assigned, and in_progress requests are kept.
+    """
+    def delete(self, request):
+        deleted_count, _ = MaintenanceRequest.objects.filter(
+            status="completed"
+        ).delete()
+
+        return Response(
+            {
+                "message": "Completed maintenance requests cleared successfully.",
+                "deleted_count": deleted_count,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 class AlertSettingsView(APIView):
     """

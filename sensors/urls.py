@@ -33,6 +33,11 @@ from .views import (
 
     # Device Token
     RegisterDeviceTokenView,
+
+    #delete
+    ClearDismissedAlertsView,
+    ClearResolvedAlertResponsesView,
+    ClearCompletedMaintenanceRequestsView,
 )
 
 urlpatterns = [
@@ -68,4 +73,8 @@ urlpatterns = [
 
     # ───── DEVICE TOKEN ─────
     path('device-token/', RegisterDeviceTokenView.as_view(), name='device-token'),
+    #delete
+    path('alerts/clear-dismissed/', ClearDismissedAlertsView.as_view(), name='alerts-clear-dismissed'),
+    path('alerts/responses/clear-resolved/', ClearResolvedAlertResponsesView.as_view(), name='alert-responses-clear-resolved'),
+    path('maintenance/requests/clear-completed/', ClearCompletedMaintenanceRequestsView.as_view(), name='maintenance-clear-completed'), 
 ]
