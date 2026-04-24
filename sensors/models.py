@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 
 
 class LeakEvent(models.Model):
@@ -85,3 +86,75 @@ class AlertSettings(models.Model):
             f"water_lost={self.water_lost_threshold}, "
             f"duration={self.duration_threshold})"
         )
+
+
+class AlertResponse(models.Model):
+    """
+    Tracks who responded to an alert and what action they took.
+    This allows the admin to see who acknowledged, responded to,
+    resolved, or dismissed a notification.
+    """
+    ACTION_CHOICES = [
+        ("acknowledged", "Acknowledged"),
+        ("responding", "Responding"),
+        ("resolved", "Resolved"),
+        ("dismissed", "Dismissed"),
+    ]
+
+    alert = models.ForeignKey(
+        Alert,
+        on_delete=models.CASCADE,
+        related_name="responses",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="alert_responses",
+    )
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.action} - {self.alert.title}"
+
+
+class MaintenanceRequest(models.Model):
+    """
+    Tracks technician requests created from the app.
+    This supports the Call Technician feature and gives the admin
+    a history of maintenance/escalation actions.
+    """
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("assigned", "Assigned"),
+        ("in_progress", "In Progress"),
+        ("completed", "Completed"),
+    ]
+
+    device_id = models.CharField(max_length=100)
+    location = models.CharField(max_length=255)
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="maintenance_requests",
+    )
+    reason = models.TextField(default="Leak detected")
+    severity = models.CharField(max_length=20, default="critical")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.device_id} - {self.location} - {self.status}"

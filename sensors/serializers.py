@@ -1,5 +1,11 @@
 from rest_framework import serializers
-from .models import LeakEvent, Alert, AlertSettings
+from .models import (
+    LeakEvent,
+    Alert,
+    AlertSettings,
+    AlertResponse,
+    MaintenanceRequest,
+)
 
 
 class LeakEventSerializer(serializers.ModelSerializer):
@@ -34,4 +40,38 @@ class AlertSettingsSerializer(serializers.ModelSerializer):
             'water_lost_threshold',
             'duration_threshold',
             'updated_at',
+        ]
+
+
+# 🔥 NEW: Alert Response Serializer
+class AlertResponseSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField()  # shows username instead of ID
+
+    class Meta:
+        model = AlertResponse
+        fields = [
+            'id',
+            'alert',
+            'user',
+            'action',
+            'notes',
+            'created_at',
+        ]
+
+
+# 🔥 NEW: Maintenance Request Serializer
+class MaintenanceRequestSerializer(serializers.ModelSerializer):
+    requested_by = serializers.StringRelatedField()
+
+    class Meta:
+        model = MaintenanceRequest
+        fields = [
+            'id',
+            'device_id',
+            'location',
+            'requested_by',
+            'reason',
+            'severity',
+            'status',
+            'created_at',
         ]

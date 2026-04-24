@@ -2,14 +2,26 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from django.shortcuts import get_object_or_404
+from django.contrib.auth.models import User
+from django.utils import timezone
+from django.db.models import Count
 
 from firebase_admin import messaging
 
-from .models import LeakEvent, Alert, AlertSettings, DeviceToken
+from .models import (
+    LeakEvent,
+    Alert,
+    AlertSettings,
+    DeviceToken,
+    AlertResponse,
+    MaintenanceRequest,
+)
 from .serializers import (
     LeakEventSerializer,
     AlertSerializer,
     AlertSettingsSerializer,
+    AlertResponseSerializer,
+    MaintenanceRequestSerializer,
 )
 
 
@@ -234,6 +246,286 @@ class MarkAllAlertsReadView(APIView):
 
         return Response(
             {"message": "All alerts marked as read"},
+            status=status.HTTP_200_OK,
+        )
+
+
+class AlertResponseCreateView(APIView):
+    """
+    POST /api/alerts/<id>/respond/
+
+    Records who responded to an alert.
+
+    Expected body:
+    {
+        "user_id": 1,
+        "action": "acknowledged" | "responding" | "resolved" | "dismissed",
+        "notes": "Optional notes"
+    }
+    """
+    def post(self, request, pk):
+        alert = get_object_or_404(Alert, pk=pk)
+
+        user_id = request.data.get("user_id")
+        action = request.data.get("action")
+        notes = request.data.get("notes", "")
+
+        if not user_id:
+            return Response(
+                {"error": "user_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not action:
+            return Response(
+                {"error": "action is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        valid_actions = ["acknowledged", "responding", "resolved", "dismissed"]
+        if action not in valid_actions:
+            return Response(
+                {"error": f"Invalid action. Use one of: {valid_actions}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = get_object_or_404(User, pk=user_id)
+
+        response = AlertResponse.objects.create(
+            alert=alert,
+            user=user,
+            action=action,
+            notes=notes,
+        )
+
+        if action == "acknowledged":
+            alert.is_read = True
+            alert.save()
+
+        if action == "dismissed":
+            alert.is_dismissed = True
+            alert.save()
+
+        serializer = AlertResponseSerializer(response)
+
+        return Response(
+            {
+                "message": "Alert response recorded successfully.",
+                "data": serializer.data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AlertResponseListView(APIView):
+    """
+    GET /api/alerts/responses/
+
+    Admin uses this to see who responded to alerts.
+    """
+    def get(self, request):
+        responses = AlertResponse.objects.select_related("alert", "user").all()[:100]
+        serializer = AlertResponseSerializer(responses, many=True)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class MaintenanceCallView(APIView):
+    """
+    POST /api/maintenance/call/
+
+    Creates a technician/maintenance request.
+
+    Expected body:
+    {
+        "device_id": "sensor-001",
+        "location": "Kitchen",
+        "user_id": 1,
+        "reason": "Critical leak detected",
+        "severity": "critical"
+    }
+    """
+    def post(self, request):
+        device_id = request.data.get("device_id")
+        location = request.data.get("location")
+        user_id = request.data.get("user_id")
+        reason = request.data.get("reason", "Leak detected")
+        severity = request.data.get("severity", "critical")
+
+        if not device_id:
+            return Response(
+                {"error": "device_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not location:
+            return Response(
+                {"error": "location is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        requested_by = None
+        if user_id:
+            requested_by = get_object_or_404(User, pk=user_id)
+
+        maintenance_request = MaintenanceRequest.objects.create(
+            device_id=device_id,
+            location=location,
+            requested_by=requested_by,
+            reason=reason,
+            severity=severity,
+            status="pending",
+        )
+
+        serializer = MaintenanceRequestSerializer(maintenance_request)
+
+        return Response(
+            {
+                "message": "Technician request created successfully.",
+                "data": serializer.data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class MaintenanceRequestListView(APIView):
+    """
+    GET /api/maintenance/requests/
+
+    Admin uses this to view all technician requests.
+    """
+    def get(self, request):
+        requests = MaintenanceRequest.objects.select_related("requested_by").all()[:100]
+        serializer = MaintenanceRequestSerializer(requests, many=True)
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class MaintenanceRequestDetailView(APIView):
+    """
+    PATCH /api/maintenance/requests/<id>/
+
+    Updates maintenance request status.
+
+    Expected body:
+    {
+        "status": "assigned" | "in_progress" | "completed"
+    }
+    """
+    def patch(self, request, pk):
+        maintenance_request = get_object_or_404(MaintenanceRequest, pk=pk)
+
+        new_status = request.data.get("status")
+        valid_statuses = ["pending", "assigned", "in_progress", "completed"]
+
+        if not new_status:
+            return Response(
+                {"error": "status is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if new_status not in valid_statuses:
+            return Response(
+                {"error": f"Invalid status. Use one of: {valid_statuses}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        maintenance_request.status = new_status
+        maintenance_request.save()
+
+        serializer = MaintenanceRequestSerializer(maintenance_request)
+
+        return Response(
+            {
+                "message": "Maintenance request updated successfully.",
+                "data": serializer.data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class LatestReportView(APIView):
+    """
+    GET /api/reports/latest/
+
+    Generates a simple latest incident report from existing data.
+    """
+    def get(self, request):
+        latest_event = LeakEvent.objects.first()
+
+        if not latest_event:
+            return Response(
+                {"message": "No leak events available for report."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        related_alerts = Alert.objects.filter(
+            device_id=latest_event.device_id,
+            location=latest_event.location,
+        )[:5]
+
+        report = {
+            "report_type": "latest_leak_report",
+            "generated_at": timezone.now(),
+            "incident": {
+                "id": latest_event.id,
+                "device_id": latest_event.device_id,
+                "location": latest_event.location,
+                "status": latest_event.status,
+                "flow_in": latest_event.flow_in,
+                "flow_out": latest_event.flow_out,
+                "delta": latest_event.delta,
+                "duration_minutes": latest_event.duration_minutes,
+                "water_lost": latest_event.water_lost,
+                "money_lost": latest_event.money_lost,
+                "timestamp": latest_event.timestamp,
+                "created_at": latest_event.created_at,
+            },
+            "alerts": AlertSerializer(related_alerts, many=True).data,
+        }
+
+        return Response(report, status=status.HTTP_200_OK)
+
+
+class AdminSummaryView(APIView):
+    """
+    GET /api/admin/summary/
+
+    Gives admin dashboard summary counts.
+    """
+    def get(self, request):
+        today = timezone.now().date()
+
+        total_alerts = Alert.objects.count()
+        active_alerts = Alert.objects.filter(is_dismissed=False).count()
+        critical_alerts = Alert.objects.filter(
+            severity="critical",
+            is_dismissed=False,
+        ).count()
+
+        total_responses = AlertResponse.objects.count()
+        responses_today = AlertResponse.objects.filter(
+            created_at__date=today,
+        ).count()
+
+        pending_maintenance = MaintenanceRequest.objects.filter(
+            status="pending",
+        ).count()
+
+        maintenance_by_status = MaintenanceRequest.objects.values("status").annotate(
+            count=Count("id")
+        )
+
+        return Response(
+            {
+                "total_alerts": total_alerts,
+                "active_alerts": active_alerts,
+                "critical_alerts": critical_alerts,
+                "total_responses": total_responses,
+                "responses_today": responses_today,
+                "pending_maintenance": pending_maintenance,
+                "maintenance_by_status": list(maintenance_by_status),
+            },
             status=status.HTTP_200_OK,
         )
 

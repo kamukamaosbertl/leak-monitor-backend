@@ -75,7 +75,13 @@ class SensorConsumer(AsyncWebsocketConsumer):
                 if history_result.get('history_full_notified'):
                     await self.send_push_notification(
                         'History Limit Reached',
-                        'History is full (100 records). Old records are being replaced automatically.'
+                        'History is full (100 records). Old records are being replaced automatically.',
+                        data={
+                            'type': 'history_limit',
+                            'severity': 'info',
+                            'device_id': str(data.get('device_id', 'unknown')),
+                            'location': str(data.get('location', 'Unknown')),
+                        }
                     )
 
                 alert_data = await self.create_alert_if_needed(data)
@@ -83,7 +89,14 @@ class SensorConsumer(AsyncWebsocketConsumer):
                 if alert_data:
                     await self.send_push_notification(
                         alert_data['title'],
-                        alert_data['message']
+                        alert_data['message'],
+                        data={
+                            'type': 'water_leak',
+                            'alert_id': str(alert_data['alert_id']),
+                            'severity': str(alert_data['severity']),
+                            'device_id': str(alert_data['device_id']),
+                            'location': str(alert_data['location']),
+                        }
                     )
 
             await self.channel_layer.group_send(
@@ -249,9 +262,12 @@ class SensorConsumer(AsyncWebsocketConsumer):
         )
 
         return {
+            'alert_id': alert.id,
             'title': alert.title,
             'message': alert.message,
             'severity': alert.severity,
+            'device_id': alert.device_id,
+            'location': alert.location,
         }
 
     @database_sync_to_async
@@ -262,7 +278,7 @@ class SensorConsumer(AsyncWebsocketConsumer):
             DeviceToken.objects.filter(is_active=True).values_list('token', flat=True)
         )
 
-    async def send_push_notification(self, title, body):
+    async def send_push_notification(self, title, body, data=None):
         tokens = await self.get_active_device_tokens()
 
         for token in tokens:
@@ -273,12 +289,9 @@ class SensorConsumer(AsyncWebsocketConsumer):
                         title=title,
                         body=body,
                     ),
-                    data={
-                        'type': 'water_leak',
-                    }
+                    data=data or {},
                 )
                 messaging.send(msg)
                 print(f'Push sent to {token}')
             except Exception as e:
                 print(f'Push failed for {token}: {e}')
-                
