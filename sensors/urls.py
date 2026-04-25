@@ -1,40 +1,31 @@
 from django.urls import path
+
 from .views import (
     LeakEventCreateView,
     LeakEventListView,
-
-    # History actions
     LeakEventDetailView,
     LeakEventClearView,
 
-    # Alerts
     AlertListView,
     MarkAlertReadView,
     DismissAlertView,
     MarkAllAlertsReadView,
 
-    # Alert responses
     AlertResponseCreateView,
     AlertResponseListView,
 
-    # Maintenance
     MaintenanceCallView,
     MaintenanceRequestListView,
     MaintenanceRequestDetailView,
 
-    # Reports
     LatestReportView,
+    LatestReportCSVView,
+    LatestReportPDFView,
 
-    # Admin
     AdminSummaryView,
-
-    # Settings
     AlertSettingsView,
-
-    # Device Token
     RegisterDeviceTokenView,
 
-    #delete
     ClearDismissedAlertsView,
     ClearResolvedAlertResponsesView,
     ClearCompletedMaintenanceRequestsView,
@@ -77,4 +68,6 @@ urlpatterns = [
     path('alerts/clear-dismissed/', ClearDismissedAlertsView.as_view(), name='alerts-clear-dismissed'),
     path('alerts/responses/clear-resolved/', ClearResolvedAlertResponsesView.as_view(), name='alert-responses-clear-resolved'),
     path('maintenance/requests/clear-completed/', ClearCompletedMaintenanceRequestsView.as_view(), name='maintenance-clear-completed'), 
+    path("reports/latest/csv/", LatestReportCSVView.as_view(), name="latest-report-csv"),
+    path("reports/latest/pdf/", LatestReportPDFView.as_view(), name="latest-report-pdf"),
 ]

@@ -1,3 +1,7 @@
+import csv
+from io import BytesIO
+from django.http import HttpResponse
+from reportlab.pdfgen import canvas
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -486,6 +490,163 @@ class LatestReportView(APIView):
         }
 
         return Response(report, status=status.HTTP_200_OK)
+class LatestReportCSVView(APIView):
+    """
+    GET /api/reports/latest/csv/
+
+    Exports the latest incident report as CSV.
+    """
+    def get(self, request):
+        latest_event = LeakEvent.objects.first()
+
+        if not latest_event:
+            return Response(
+                {"message": "No leak events available for report."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        related_alerts = Alert.objects.filter(
+            device_id=latest_event.device_id,
+            location=latest_event.location,
+        )[:5]
+
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="latest_leak_report.csv"'
+
+        writer = csv.writer(response)
+
+        writer.writerow(["Latest Leak Report"])
+        writer.writerow(["Generated At", timezone.now()])
+        writer.writerow([])
+
+        writer.writerow(["Incident Details"])
+        writer.writerow(["ID", latest_event.id])
+        writer.writerow(["Device ID", latest_event.device_id])
+        writer.writerow(["Location", latest_event.location])
+        writer.writerow(["Status", latest_event.status])
+        writer.writerow(["Flow In", latest_event.flow_in])
+        writer.writerow(["Flow Out", latest_event.flow_out])
+        writer.writerow(["Delta", latest_event.delta])
+        writer.writerow(["Duration Minutes", latest_event.duration_minutes])
+        writer.writerow(["Water Lost", latest_event.water_lost])
+        writer.writerow(["Money Lost", latest_event.money_lost])
+        writer.writerow(["Timestamp", latest_event.timestamp])
+        writer.writerow(["Created At", latest_event.created_at])
+        writer.writerow([])
+
+        writer.writerow(["Related Alerts"])
+        writer.writerow(["ID", "Title", "Message", "Severity", "Location", "Timestamp"])
+
+        for alert in related_alerts:
+            writer.writerow([
+                alert.id,
+                alert.title,
+                alert.message,
+                alert.severity,
+                alert.location,
+                alert.timestamp,
+            ])
+
+        return response
+
+
+class LatestReportPDFView(APIView):
+    """
+    GET /api/reports/latest/pdf/
+
+    Exports the latest incident report as PDF.
+    """
+    def get(self, request):
+        latest_event = LeakEvent.objects.first()
+
+        if not latest_event:
+            return Response(
+                {"message": "No leak events available for report."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        related_alerts = Alert.objects.filter(
+            device_id=latest_event.device_id,
+            location=latest_event.location,
+        )[:5]
+
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer)
+
+        pdf.setFont("Helvetica-Bold", 18)
+        pdf.drawString(80, 800, "Latest Leak Report")
+
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(80, 780, f"Generated At: {timezone.now()}")
+
+        y = 740
+
+        pdf.setFont("Helvetica-Bold", 13)
+        pdf.drawString(80, y, "Incident Details")
+        y -= 25
+
+        pdf.setFont("Helvetica", 11)
+
+        fields = [
+            ("ID", latest_event.id),
+            ("Device ID", latest_event.device_id),
+            ("Location", latest_event.location),
+            ("Status", latest_event.status),
+            ("Flow In", latest_event.flow_in),
+            ("Flow Out", latest_event.flow_out),
+            ("Delta", latest_event.delta),
+            ("Duration Minutes", latest_event.duration_minutes),
+            ("Water Lost", latest_event.water_lost),
+            ("Money Lost", latest_event.money_lost),
+            ("Timestamp", latest_event.timestamp),
+            ("Created At", latest_event.created_at),
+        ]
+
+        for label, value in fields:
+            pdf.drawString(80, y, f"{label}: {value}")
+            y -= 20
+
+            if y < 80:
+                pdf.showPage()
+                y = 800
+                pdf.setFont("Helvetica", 11)
+
+        y -= 20
+        pdf.setFont("Helvetica-Bold", 13)
+        pdf.drawString(80, y, "Related Alerts")
+        y -= 25
+
+        pdf.setFont("Helvetica", 10)
+
+        if related_alerts:
+            for alert in related_alerts:
+                pdf.drawString(80, y, f"Title: {alert.title}")
+                y -= 16
+                pdf.drawString(80, y, f"Severity: {alert.severity}")
+                y -= 16
+                pdf.drawString(80, y, f"Location: {alert.location}")
+                y -= 16
+                pdf.drawString(80, y, f"Timestamp: {alert.timestamp}")
+                y -= 16
+                pdf.drawString(80, y, f"Message: {alert.message}")
+                y -= 30
+
+                if y < 80:
+                    pdf.showPage()
+                    y = 800
+                    pdf.setFont("Helvetica", 10)
+        else:
+            pdf.drawString(80, y, "No related alerts found.")
+
+        pdf.showPage()
+        pdf.save()
+
+        buffer.seek(0)
+
+        response = HttpResponse(buffer, content_type="application/pdf")
+        response["Content-Disposition"] = 'attachment; filename="latest_leak_report.pdf"'
+
+        return response
 
 
 class AdminSummaryView(APIView):
