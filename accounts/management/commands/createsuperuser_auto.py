@@ -13,10 +13,7 @@ class Command(BaseCommand):
 
         if not username or not email or not password:
             self.stdout.write(
-                self.style.WARNING(
-                    "Superuser not created. Missing DJANGO_SUPERUSER_USERNAME, "
-                    "DJANGO_SUPERUSER_EMAIL, or DJANGO_SUPERUSER_PASSWORD."
-                )
+                self.style.WARNING("Superuser not created. Missing environment variables.")
             )
             return
 
@@ -24,10 +21,5 @@ class Command(BaseCommand):
             self.stdout.write("Superuser already exists")
             return
 
-        User.objects.create_superuser(
-            username=username,
-            email=email,
-            password=password,
-        )
-
+        User.objects.create_superuser(username=username, email=email, password=password)
         self.stdout.write(self.style.SUCCESS("Superuser created successfully"))
