@@ -1,13 +1,15 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 
 
 class UserProfile(models.Model):
     """
-    Extends Django's default User model with system roles.
+    Extends Django User with system roles and extra info.
 
-    We keep Django's built-in User for login/authentication,
-    then use this profile to control what each user can do.
+    This is the CORE of your permission system.
+    Every user MUST have a profile.
     """
 
     ROLE_CHOICES = [
@@ -26,7 +28,7 @@ class UserProfile(models.Model):
     role = models.CharField(
         max_length=20,
         choices=ROLE_CHOICES,
-        default="worker",
+        default="worker",  # 🔥 default safe role
     )
 
     phone_number = models.CharField(
@@ -43,11 +45,13 @@ class UserProfile(models.Model):
 
     is_available = models.BooleanField(
         default=True,
-        help_text="Used to know if a worker/technician can respond to alerts.",
+        help_text="Indicates if a technician/worker can respond to alerts.",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # ── ROLE HELPERS ─────────────────────────────────────────
 
     def is_admin(self):
         return self.role == "admin"
@@ -62,4 +66,18 @@ class UserProfile(models.Model):
         return self.role == "viewer"
 
     def __str__(self):
-        return f"{self.user.username} - {self.role}"
+        return f"{self.user.username} ({self.role})"
+
+
+# 🔥 AUTO CREATE PROFILE WHEN USER IS CREATED
+@receiver(post_save, sender=User)
+def create_user_profile(sender, instance, created, **kwargs):
+    if created:
+        UserProfile.objects.create(user=instance)
+
+
+# 🔥 ENSURE PROFILE ALWAYS EXISTS
+@receiver(post_save, sender=User)
+def save_user_profile(sender, instance, **kwargs):
+    if hasattr(instance, "profile"):
+        instance.profile.save()
