@@ -25,7 +25,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'channels',
     'sensors',
-    'accounts', 
+   'accounts.apps.AccountsConfig', 
 ]
 
 MIDDLEWARE = [
