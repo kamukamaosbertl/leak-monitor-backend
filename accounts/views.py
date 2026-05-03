@@ -10,10 +10,20 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from firebase_admin import auth as firebase_auth
 
-from .serializers import RegisterSerializer, UserSerializer
+from .serializers import (
+    RegisterSerializer,
+    UserSerializer,
+    ProfileSetupSerializer,   # ✅ NEW
+)
 
 
+# ───────────────────────────────────────────────────────────
+# 🔐 JWT TOKEN GENERATION
+# ───────────────────────────────────────────────────────────
 def get_tokens_for_user(user):
+    """
+    Generates JWT access and refresh tokens.
+    """
     refresh = RefreshToken.for_user(user)
     return {
         "refresh": str(refresh),
@@ -21,42 +31,28 @@ def get_tokens_for_user(user):
     }
 
 
-def get_user_role(user):
-    """
-    Safe role fallback.
-
-    Later, when you add a real Profile model, this can read:
-    user.profile.role
-
-    For now:
-    - superuser/staff = admin
-    - normal user = worker
-    """
-    if user.is_superuser or user.is_staff:
-        return "admin"
-
-    if hasattr(user, "profile") and hasattr(user.profile, "role"):
-        return user.profile.role
-
-    return "worker"
-
-
+# ───────────────────────────────────────────────────────────
+# 📦 AUTH RESPONSE BUILDER
+# ───────────────────────────────────────────────────────────
 def build_auth_response(user):
-    user_data = UserSerializer(user).data
-    user_data["role"] = get_user_role(user)
-
+    """
+    Standard login/register response.
+    """
     return {
-        "user": user_data,
+        "user": UserSerializer(user).data,
         "tokens": get_tokens_for_user(user),
     }
 
 
+# ───────────────────────────────────────────────────────────
+# 📝 REGISTER
+# ───────────────────────────────────────────────────────────
 class RegisterView(APIView):
     """
     POST /api/auth/register/
-    Creates normal email/password account.
-    """
 
+    Creates user WITHOUT profile completion.
+    """
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
 
@@ -71,12 +67,15 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+# ───────────────────────────────────────────────────────────
+# 🔑 LOGIN
+# ───────────────────────────────────────────────────────────
 class LoginView(APIView):
     """
     POST /api/auth/login/
-    Allows login with username or email.
-    """
 
+    Supports username OR email.
+    """
     def post(self, request):
         username = request.data.get("username", "").strip()
         password = request.data.get("password", "").strip()
@@ -107,21 +106,49 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        return Response(build_auth_response(user), status=status.HTTP_200_OK)
+        return Response(build_auth_response(user))
 
 
+# ───────────────────────────────────────────────────────────
+# 🛠 PROFILE SETUP (🔥 NEW)
+# ───────────────────────────────────────────────────────────
+class ProfileSetupView(APIView):
+    """
+    PUT /api/auth/profile/setup/
+
+    Completes user profile after signup.
+
+    This is triggered by your Flutter setup screens.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request):
+        profile = request.user.profile
+
+        serializer = ProfileSetupSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+
+            return Response(
+                UserSerializer(request.user).data,
+                status=status.HTTP_200_OK
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ───────────────────────────────────────────────────────────
+# 🔐 GOOGLE LOGIN
+# ───────────────────────────────────────────────────────────
 class GoogleLoginView(APIView):
     """
     POST /api/auth/google/
-
-    Flutter sends Firebase ID token:
-    {
-        "id_token": "firebase_google_id_token"
-    }
-
-    Django verifies token, creates/fetches user, returns JWT + role.
     """
-
     def post(self, request):
         id_token = request.data.get("id_token")
 
@@ -136,13 +163,6 @@ class GoogleLoginView(APIView):
 
             email = decoded_token.get("email")
             name = decoded_token.get("name", "")
-            uid = decoded_token.get("uid")
-
-            if not email:
-                return Response(
-                    {"error": "Google account email not found"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
 
             username = email.split("@")[0]
 
@@ -158,63 +178,39 @@ class GoogleLoginView(APIView):
                 user.set_unusable_password()
                 user.save()
 
-            return Response(
-                {
-                    **build_auth_response(user),
-                    "firebase_uid": uid,
-                    "created": created,
-                },
-                status=status.HTTP_200_OK,
-            )
+            return Response(build_auth_response(user))
 
         except Exception as e:
             return Response(
-                {"error": f"Google login failed: {str(e)}"},
+                {"error": str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
 
+# ───────────────────────────────────────────────────────────
+# 🚪 LOGOUT
+# ───────────────────────────────────────────────────────────
 class LogoutView(APIView):
-    """
-    POST /api/auth/logout/
-    Blacklists refresh token.
-    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
             refresh_token = request.data.get("refresh")
 
-            if not refresh_token:
-                return Response(
-                    {"error": "refresh token is required"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
             token = RefreshToken(refresh_token)
             token.blacklist()
 
-            return Response(
-                {"message": "Logged out successfully"},
-                status=status.HTTP_200_OK,
-            )
+            return Response({"message": "Logged out"})
 
         except Exception:
-            return Response(
-                {"error": "Invalid token"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return Response({"error": "Invalid token"})
 
 
+# ───────────────────────────────────────────────────────────
+# 👤 CURRENT USER
+# ───────────────────────────────────────────────────────────
 class MeView(APIView):
-    """
-    GET /api/auth/me/
-    Returns current user info.
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        user_data = UserSerializer(request.user).data
-        user_data["role"] = get_user_role(request.user)
-
-        return Response(user_data, status=status.HTTP_200_OK)
+        return Response(UserSerializer(request.user).data)

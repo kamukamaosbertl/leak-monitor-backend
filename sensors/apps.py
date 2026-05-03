@@ -1,4 +1,5 @@
 from django.apps import AppConfig
+from django.conf import settings
 
 
 class SensorsConfig(AppConfig):
@@ -6,4 +7,10 @@ class SensorsConfig(AppConfig):
     name = 'sensors'
 
     def ready(self):
-        import sensors.firebase_config
+        """
+        Only load Firebase when enabled.
+
+        Prevents crashes when Firebase credentials are missing locally.
+        """
+        if getattr(settings, "ENABLE_FIREBASE", False):
+            import sensors.firebase_config
