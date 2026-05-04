@@ -1,10 +1,10 @@
-from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import User
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -13,52 +13,49 @@ from firebase_admin import auth as firebase_auth
 from .serializers import (
     RegisterSerializer,
     UserSerializer,
-    ProfileSetupSerializer,   # ✅ NEW
+    ProfileSetupSerializer,
 )
 
 
-# ───────────────────────────────────────────────────────────
-# 🔐 JWT TOKEN GENERATION
-# ───────────────────────────────────────────────────────────
 def get_tokens_for_user(user):
-    """
-    Generates JWT access and refresh tokens.
-    """
+    """Generate JWT refresh and access tokens for a user."""
     refresh = RefreshToken.for_user(user)
+
     return {
         "refresh": str(refresh),
         "access": str(refresh.access_token),
     }
 
 
-# ───────────────────────────────────────────────────────────
-# 📦 AUTH RESPONSE BUILDER
-# ───────────────────────────────────────────────────────────
 def build_auth_response(user):
-    """
-    Standard login/register response.
-    """
+    """Return the standard auth response used by login/register/google login."""
     return {
         "user": UserSerializer(user).data,
         "tokens": get_tokens_for_user(user),
     }
 
 
-# ───────────────────────────────────────────────────────────
-# 📝 REGISTER
-# ───────────────────────────────────────────────────────────
-class RegisterView(APIView):
-    """
-    POST /api/auth/register/
+def get_unique_username_from_email(email):
+    """Create a safe unique username from an email address."""
+    base_username = email.split("@")[0].lower().replace(" ", "_")
+    username = base_username
+    counter = 1
 
-    Creates user WITHOUT profile completion.
-    """
+    while User.objects.filter(username=username).exists():
+        username = f"{base_username}_{counter}"
+        counter += 1
+
+    return username
+
+
+class RegisterView(APIView):
+    """POST /api/auth/register/"""
+
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
 
         if serializer.is_valid():
             user = serializer.save()
-
             return Response(
                 build_auth_response(user),
                 status=status.HTTP_201_CREATED,
@@ -67,38 +64,48 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# ───────────────────────────────────────────────────────────
-# 🔑 LOGIN
-# ───────────────────────────────────────────────────────────
 class LoginView(APIView):
     """
     POST /api/auth/login/
 
-    Supports username OR email.
+    Supports username or email.
+    Uses filter().first() instead of get() to avoid crashing
+    when duplicate emails already exist in the database.
     """
+
     def post(self, request):
-        username = request.data.get("username", "").strip()
+        username_or_email = request.data.get("username", "").strip()
         password = request.data.get("password", "").strip()
 
-        if not username or not password:
+        if not username_or_email or not password:
             return Response(
                 {"error": "Username and password are required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = None
+        # Try username first.
+        user_obj = User.objects.filter(username=username_or_email).first()
 
-        if "@" in username:
-            try:
-                found_user = User.objects.get(email=username)
-                user = authenticate(
-                    username=found_user.username,
-                    password=password,
-                )
-            except User.DoesNotExist:
-                user = None
-        else:
-            user = authenticate(username=username, password=password)
+        # If username was not found, try email.
+        if user_obj is None:
+            user_obj = (
+                User.objects
+                .filter(email=username_or_email)
+                .order_by("id")
+                .first()
+            )
+
+        if user_obj is None:
+            return Response(
+                {"error": "Invalid credentials"},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # Django authenticate expects username, not email.
+        user = authenticate(
+            username=user_obj.username,
+            password=password,
+        )
 
         if user is None:
             return Response(
@@ -106,19 +113,14 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        return Response(build_auth_response(user))
+        return Response(build_auth_response(user), status=status.HTTP_200_OK)
 
 
-# ───────────────────────────────────────────────────────────
-# 🛠 PROFILE SETUP (🔥 NEW)
-# ───────────────────────────────────────────────────────────
 class ProfileSetupView(APIView):
     """
     PUT /api/auth/profile/setup/
 
-    Completes user profile after signup.
-
-    This is triggered by your Flutter setup screens.
+    Completes the user profile after signup/login.
     """
     permission_classes = [IsAuthenticated]
 
@@ -136,19 +138,15 @@ class ProfileSetupView(APIView):
 
             return Response(
                 UserSerializer(request.user).data,
-                status=status.HTTP_200_OK
+                status=status.HTTP_200_OK,
             )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# ───────────────────────────────────────────────────────────
-# 🔐 GOOGLE LOGIN
-# ───────────────────────────────────────────────────────────
 class GoogleLoginView(APIView):
-    """
-    POST /api/auth/google/
-    """
+    """POST /api/auth/google/"""
+
     def post(self, request):
         id_token = request.data.get("id_token")
 
@@ -164,21 +162,31 @@ class GoogleLoginView(APIView):
             email = decoded_token.get("email")
             name = decoded_token.get("name", "")
 
-            username = email.split("@")[0]
+            if not email:
+                return Response(
+                    {"error": "Google account has no email"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-            user, created = User.objects.get_or_create(
-                email=email,
-                defaults={
-                    "username": username,
-                    "first_name": name,
-                },
+            # Avoid get_or_create(email=email), because duplicate emails
+            # can already exist and would crash with MultipleObjectsReturned.
+            user = (
+                User.objects
+                .filter(email=email)
+                .order_by("id")
+                .first()
             )
 
-            if created:
+            if user is None:
+                user = User.objects.create(
+                    username=get_unique_username_from_email(email),
+                    email=email,
+                    first_name=name,
+                )
                 user.set_unusable_password()
                 user.save()
 
-            return Response(build_auth_response(user))
+            return Response(build_auth_response(user), status=status.HTTP_200_OK)
 
         except Exception as e:
             return Response(
@@ -187,30 +195,37 @@ class GoogleLoginView(APIView):
             )
 
 
-# ───────────────────────────────────────────────────────────
-# 🚪 LOGOUT
-# ───────────────────────────────────────────────────────────
 class LogoutView(APIView):
+    """POST /api/auth/logout/"""
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
             refresh_token = request.data.get("refresh")
 
+            if not refresh_token:
+                return Response(
+                    {"error": "Refresh token is required"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             token = RefreshToken(refresh_token)
             token.blacklist()
 
-            return Response({"message": "Logged out"})
+            return Response({"message": "Logged out"}, status=status.HTTP_200_OK)
 
         except Exception:
-            return Response({"error": "Invalid token"})
+            return Response(
+                {"error": "Invalid token"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
-# ───────────────────────────────────────────────────────────
-# 👤 CURRENT USER
-# ───────────────────────────────────────────────────────────
 class MeView(APIView):
+    """GET /api/auth/me/"""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
+        return Response(UserSerializer(request.user).data, status=status.HTTP_200_OK)
