@@ -8,7 +8,8 @@ from .views import (
     LogoutView,
     MeView,
     GoogleLoginView,
-    ProfileSetupView,   # 🔥 NEW
+    ProfileSetupView,
+    DeleteAccountView,# 🔥 NEW
 )
 
 urlpatterns = [
@@ -46,4 +47,9 @@ urlpatterns = [
     # 🛠 PROFILE SETUP
     # ───────────────────────────────────────────
     path('profile/setup/', ProfileSetupView.as_view(), name='profile-setup'),
+    
+    # ───────────────────────────────────────────
+    #delete  routes
+    #
+   path('delete-account/', DeleteAccountView.as_view()),
 ]
