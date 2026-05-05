@@ -161,7 +161,7 @@ if ENABLE_FIREBASE:
     import firebase_admin
     from firebase_admin import credentials
 
-    firebase_credentials = config('FIREBASE_CREDENTIALS_JSON', default=None)
+    firebase_credentials = config('FIREBASE_SERVICE_ACCOUNT_JSON', default=None)
 
     if firebase_credentials and not firebase_admin._apps:
         try:
