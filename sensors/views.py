@@ -778,5 +778,24 @@ class AlertSettingsView(APIView):
                 },
                 status=status.HTTP_200_OK,
             )
+            
+class ClearPlaceholderMaintenanceRequestsView(APIView):
+    """
+    DELETE /api/maintenance/requests/clear-placeholders/
+    Deletes fake/placeholder maintenance requests.
+    """
+    def delete(self, request):
+        deleted_count, _ = MaintenanceRequest.objects.filter(
+            device_id="unknown",
+            location="Waiting for sensor...",
+        ).delete()
+
+        return Response(
+            {
+                "message": "Placeholder maintenance requests cleared successfully.",
+                "deleted_count": deleted_count,
+            },
+            status=status.HTTP_200_OK,
+        )            
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

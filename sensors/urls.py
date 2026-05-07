@@ -29,6 +29,7 @@ from .views import (
     ClearDismissedAlertsView,
     ClearResolvedAlertResponsesView,
     ClearCompletedMaintenanceRequestsView,
+    ClearPlaceholderMaintenanceRequestsView,
 )
 
 urlpatterns = [
@@ -70,4 +71,8 @@ urlpatterns = [
     path('maintenance/requests/clear-completed/', ClearCompletedMaintenanceRequestsView.as_view(), name='maintenance-clear-completed'), 
     path("reports/latest/csv/", LatestReportCSVView.as_view(), name="latest-report-csv"),
     path("reports/latest/pdf/", LatestReportPDFView.as_view(), name="latest-report-pdf"),
+    path(
+    "maintenance/requests/clear-placeholders/",
+    ClearPlaceholderMaintenanceRequestsView.as_view(),
+),
 ]
