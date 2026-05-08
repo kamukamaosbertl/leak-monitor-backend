@@ -12,7 +12,7 @@ class SensorConsumer(AsyncWebsocketConsumer):
 
     # Cost of lost water in Ugandan Shillings per litre.
     # Change this value if your real water price per litre is different.
-    COST_PER_LITRE_UGX = 5
+    COST_PER_LITRE_UGX = 5000
 
     # Fixed delta rules for leak detection.
     # Delta means: flow_in - flow_out.
