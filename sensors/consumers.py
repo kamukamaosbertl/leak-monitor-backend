@@ -19,9 +19,8 @@ class SensorConsumer(AsyncWebsocketConsumer):
     # 0 to 5       => normal
     # greater than 5 to 10  => leak_detected
     # greater than 10       => critical
-    NORMAL_DELTA_MAX = 5
-    LEAK_DELTA_MAX = 10
-
+    NORMAL_DELTA_MAX = 0.5  
+    LEAK_DELTA_MAX = 1.0
     # Maximum number of leak history records to keep in the database.
     MAX_HISTORY_RECORDS = 100
 
@@ -58,8 +57,12 @@ class SensorConsumer(AsyncWebsocketConsumer):
             # Read sensor values safely. If a value is missing, use 0.
             flow_in = float(data.get('flow_in', 0))
             flow_out = float(data.get('flow_out', 0))
-            duration_minutes = float(data.get('duration_minutes', 0))
-
+            if 'duration_seconds' in data:
+                duration_minutes = float(data.get('duration_seconds', 0)) / 60
+            else:    
+                duration_minutes = float(data.get('duration_minutes', 0))
+            data['duration_minutes'] = duration_minutes    
+               
             # Delta is the difference between water entering and water leaving.
             # A positive delta means water may be getting lost.
             delta = round(flow_in - flow_out, 2)
