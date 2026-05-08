@@ -19,8 +19,8 @@ class SensorConsumer(AsyncWebsocketConsumer):
     # 0 to 5       => normal
     # greater than 5 to 10  => leak_detected
     # greater than 10       => critical
-    NORMAL_DELTA_MAX = 0.5  
-    LEAK_DELTA_MAX = 1.0
+    NORMAL_DELTA_MAX = 0.3 
+    LEAK_DELTA_MAX = 0.6
     # Maximum number of leak history records to keep in the database.
     MAX_HISTORY_RECORDS = 100
 
