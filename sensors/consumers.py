@@ -59,8 +59,10 @@ class SensorConsumer(AsyncWebsocketConsumer):
             flow_out = float(data.get('flow_out', 0))
             if 'duration_seconds' in data:
                 duration_minutes = float(data.get('duration_seconds', 0)) / 60
-            else:    
+            elif 'duration_minutes' in data:
                 duration_minutes = float(data.get('duration_minutes', 0))
+            else:    
+                duration_minutes = 12/60
             data['duration_minutes'] = duration_minutes    
                
             # Delta is the difference between water entering and water leaving.
